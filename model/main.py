@@ -151,8 +151,9 @@ def train(model, train_loader, optimizer, device):
 
 def evaluate(model, eval_loader, topk_list, beam_size, device):
     model.eval()
-    recalls = {'Recall@' + str(k): [] for k in topk_list}
-    ndcgs = {'NDCG@' + str(k): [] for k in topk_list}
+    recalls = {'Recall@' + str(k): 0.0 for k in topk_list}
+    ndcgs = {'NDCG@' + str(k): 0.0 for k in topk_list}
+    total_examples = 0
     
     with torch.no_grad():
         for batch in tqdm(eval_loader, desc="Evaluating"):
@@ -164,15 +165,14 @@ def evaluate(model, eval_loader, topk_list, beam_size, device):
             preds = preds[:, 1:]  # Exclude the start token
             preds = preds.reshape(input_ids.shape[0], beam_size, -1)  # Reshape to (batch_size, beam_size, seq_len)
             pos_index = calculate_pos_index(preds, labels, maxk=beam_size)
+            total_examples += input_ids.shape[0]
             # print(f"pos_index shape: {pos_index.shape}, pos_index: {pos_index}")
             for k in topk_list:
-                recall = recall_at_k(pos_index, k).mean().item()
-                ndcg = ndcg_at_k(pos_index, k).mean().item()
-                recalls['Recall@' + str(k)].append(recall)
-                ndcgs['NDCG@' + str(k)].append(ndcg)
-    # Calculate average recalls and ndcgs
-    avg_recalls = {k: sum(v) / len(v) for k, v in recalls.items()}
-    avg_ndcgs = {k: sum(v) / len(v) for k, v in ndcgs.items()}
+                # Sum per-user metrics so every user has equal weight.
+                recalls['Recall@' + str(k)] += recall_at_k(pos_index, k).sum().item()
+                ndcgs['NDCG@' + str(k)] += ndcg_at_k(pos_index, k).sum().item()
+    avg_recalls = {k: v / total_examples for k, v in recalls.items()}
+    avg_ndcgs = {k: v / total_examples for k, v in ndcgs.items()}
     return avg_recalls, avg_ndcgs
 
 def set_seed(seed):
@@ -186,7 +186,7 @@ def set_seed(seed):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TIGER configuration")
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training')
-    parser.add_argument('--infer_size', type=int, default=96, help='Inference size for generating recommendations')
+    parser.add_argument('--infer_size', type=int, default=256, help='Inference size for generating recommendations')
     parser.add_argument('--num_epochs', type=int, default=200, help='Number of epochs for training')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate for the optimizer')
     parser.add_argument('--device', type=str, default='cuda', help='Device to run the model on (e.g., "cuda" or "cpu")')
@@ -208,9 +208,9 @@ if __name__ == "__main__":
     parser.add_argument('--log_path', type=str, default='./logs/tiger.log', help='Path to the log file')
     parser.add_argument('--seed', type=int, default=2025, help='Random seed for reproducibility')
     parser.add_argument('--save_path', type=str, default='./ckpt/tiger.pth', help='Path to save the trained model')
-    parser.add_argument('--early_stop', type=int, default=10, help='Early stopping patience')
-    parser.add_argument('--topk_list', type=list, default=[5,10,20], help='List of top-k values for evaluation metrics')
-    parser.add_argument('--beam_size', type=int, default=30, help='Beam size for generation')
+    parser.add_argument('--early_stop', type=int, default=3, help='Early stopping patience')
+    parser.add_argument('--topk_list', type=list, default=[5,10], help='List of top-k values for evaluation metrics')
+    parser.add_argument('--beam_size', type=int, default=20, help='Beam size for generation')
     config = vars(parser.parse_args())
     # Set up logging
     logging.basicConfig(
@@ -220,14 +220,15 @@ if __name__ == "__main__":
     )
 
     logging.info(f"Configuration: {config}")
-    
+
+    # Seed before model initialization to make initial weights reproducible.
+    set_seed(config['seed'])
+
     # Initialize model
     model = TIGER(config)
     print(model.n_parameters)
     logging.info(model.n_parameters)
 
-    # Set random seed for reproducibility
-    set_seed(config['seed'])
     # Check if the device is available
     device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
     
@@ -276,24 +277,30 @@ if __name__ == "__main__":
         logging.info(f"Epoch {epoch + 1}/{config['num_epochs']}")
         train_loss = train(model, train_dataloader, optimizer, device)
         logging.info(f"Training loss: {train_loss}")
-        # Evaluate the model
+
+        # Validate every 3 epochs, and always validate the final epoch.
+        if (epoch + 1) % 3 != 0 and (epoch + 1) != config['num_epochs']:
+            continue
+
         avg_recalls, avg_ndcgs = evaluate(model, validation_dataloader, config['topk_list'], config['beam_size'], device)
         logging.info(f"Validation Dataset: {avg_recalls}")
         logging.info(f"Validation Dataset: {avg_ndcgs}")
-        if avg_ndcgs['NDCG@20'] > best_ndcg:
-            best_ndcg = avg_ndcgs['NDCG@20']
+        if avg_ndcgs['NDCG@10'] > best_ndcg:
+            best_ndcg = avg_ndcgs['NDCG@10']
             early_stop_counter = 0  # Reset early stop counter
-            test_avg_recalls, test_avg_ndcgs = evaluate(model, test_dataloader, config['topk_list'], config['beam_size'], device)
-            logging.info(f"Best NDCG@20: {best_ndcg}")
-            logging.info(f"Test Dataset: {test_avg_recalls}")
-            logging.info(f"Test Dataset: {test_avg_ndcgs}")
+            logging.info(f"Best NDCG@10: {best_ndcg}")
             # Save the best model
             torch.save(model.state_dict(), config['save_path'])
             logging.info(f"Best model saved to {config['save_path']}")
         else:
             early_stop_counter += 1
-            logging.info(f"No improvement in NDCG@20. Early stop counter: {early_stop_counter}")
+            logging.info(f"No improvement in NDCG@10. Early stop counter: {early_stop_counter}")
             if early_stop_counter >= config['early_stop']:
                 logging.info("Early stopping triggered.")
                 break
-        
+
+    # Evaluate the selected checkpoint on the test set only once.
+    model.load_state_dict(torch.load(config['save_path'], map_location=device))
+    test_avg_recalls, test_avg_ndcgs = evaluate(model, test_dataloader, config['topk_list'], config['beam_size'], device)
+    logging.info(f"Test Dataset: {test_avg_recalls}")
+    logging.info(f"Test Dataset: {test_avg_ndcgs}")
