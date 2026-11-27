@@ -134,13 +134,18 @@ class GenRecDataset(Dataset):
         )
         # Convert items to codes
         for item in processed_data:
-            item['history'] = [self.item_to_code.get(x, np.array([self.PAD_TOKEN]*4)) for x in item['history']]
+            history_ids = item['history']
+            pad_count = next(
+                (i for i, item_id in enumerate(history_ids) if item_id != self.PAD_TOKEN),
+                len(history_ids)
+            )
+            item['history'] = [self.item_to_code.get(x, np.array([self.PAD_TOKEN]*4)) for x in history_ids]
             item['target'] = self.item_to_code.get(item['target'], np.array([self.PAD_TOKEN]*4))
             if self.user_to_code is not None:
                 user_code = self.user_to_code.get(int(item['user']))
                 if user_code is None:
                     raise KeyError(f"Missing semantic ID for user {item['user']}")
-                item['history'] = [user_code] + item['history']
+                item['history'].insert(pad_count, user_code)
         return processed_data
     
     def __getitem__(self, index):

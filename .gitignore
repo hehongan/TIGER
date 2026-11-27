@@ -199,3 +199,5 @@ data/meta_Beauty.json.gz
 data/reviews_Beauty_5.json.gz
 model/ckpt
 rqvae/ckpt
+model/logs/figures
+model/plot_training_logs.py

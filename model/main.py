@@ -20,6 +20,7 @@ from dataloader import GenRecDataLoader
 class TIGER(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super(TIGER, self).__init__()
+        base_vocab_size = config.get('base_vocab_size', config['vocab_size'])
         t5config = T5Config(
         num_layers=config['num_layers'],
         num_decoder_layers=config['num_decoder_layers'],
@@ -28,7 +29,7 @@ class TIGER(nn.Module):
         num_heads=config['num_heads'],
         d_kv=config['d_kv'],
         dropout_rate=config['dropout_rate'],
-        vocab_size=config['vocab_size'],
+        vocab_size=base_vocab_size,
         pad_token_id=config['pad_token_id'],
         eos_token_id=config['eos_token_id'],
         decoder_start_token_id=config['pad_token_id'],
@@ -36,6 +37,9 @@ class TIGER(nn.Module):
     )
         # Initialize T5 model with the specified configuration
         self.model = T5ForConditionalGeneration(t5config)
+        if config['vocab_size'] > base_vocab_size:
+            # Preserve baseline initialization before adding user tokens.
+            self.model.resize_token_embeddings(config['vocab_size'])
     
     @property
     def n_parameters(self):
@@ -182,6 +186,12 @@ def set_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+def get_code_length(code_path):
+    codes = np.load(code_path, allow_pickle=True)
+    return codes.shape[1]
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TIGER configuration")
@@ -209,12 +219,13 @@ if __name__ == "__main__":
     parser.add_argument('--log_path', type=str, default='./logs/tiger.log', help='Path to the log file')
     parser.add_argument('--seed', type=int, default=2025, help='Random seed for reproducibility')
     parser.add_argument('--save_path', type=str, default='./ckpt/tiger.pth', help='Path to save the trained model')
-    parser.add_argument('--early_stop', type=int, default=10, help='Early stopping patience')
+    parser.add_argument('--early_stop', type=int, default=20, help='Early stopping patience')
     parser.add_argument('--topk_list', type=list, default=[5,10], help='List of top-k values for evaluation metrics')
     parser.add_argument('--beam_size', type=int, default=30, help='Beam size for generation')
     config = vars(parser.parse_args())
+    config['base_vocab_size'] = config['vocab_size']
     if config['user_code_path']:
-        config['vocab_size'] = max(config['vocab_size'], 2049)
+        config['vocab_size'] += get_code_length(config['user_code_path']) * 256
     # Set up logging
     logging.basicConfig(
         filename=config['log_path'],
@@ -257,7 +268,12 @@ if __name__ == "__main__":
         user_code_path=config['user_code_path']
     )
 
-    train_dataloader = GenRecDataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
+    train_generator = torch.Generator()
+    train_generator.manual_seed(config['seed'])
+    train_dataloader = GenRecDataLoader(
+        train_dataset, batch_size=config['batch_size'], shuffle=True,
+        generator=train_generator
+    )
     validation_dataloader = GenRecDataLoader(validation_dataset, batch_size=config['infer_size'], shuffle=False)
     test_dataloader = GenRecDataLoader(test_dataset, batch_size=config['infer_size'], shuffle=False)
     
