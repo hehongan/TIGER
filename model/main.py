@@ -204,6 +204,7 @@ if __name__ == "__main__":
     parser.add_argument('--max_len', type=int, default=20, help='Maximum length for padding or truncation')
     parser.add_argument('--dataset_path', type=str, default='../data/Beauty', help='Path to the dataset')
     parser.add_argument('--code_path', type=str, default='../data/Beauty/Beauty_t5_rqvae.npy', help='Path to the item-to-code mapping file')
+    parser.add_argument('--user_code_path', type=str, default=None, help='Path to the user-to-code mapping file')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'evaluation'], help='Mode of operation')
     parser.add_argument('--log_path', type=str, default='./logs/tiger.log', help='Path to the log file')
     parser.add_argument('--seed', type=int, default=2025, help='Random seed for reproducibility')
@@ -212,6 +213,8 @@ if __name__ == "__main__":
     parser.add_argument('--topk_list', type=list, default=[5,10], help='List of top-k values for evaluation metrics')
     parser.add_argument('--beam_size', type=int, default=30, help='Beam size for generation')
     config = vars(parser.parse_args())
+    if config['user_code_path']:
+        config['vocab_size'] = max(config['vocab_size'], 2049)
     # Set up logging
     logging.basicConfig(
         filename=config['log_path'],
@@ -236,19 +239,22 @@ if __name__ == "__main__":
         dataset_path=config['dataset_path']+ '/train.parquet',
         code_path=config['code_path'],
         mode='train',
-        max_len=config['max_len']
+        max_len=config['max_len'],
+        user_code_path=config['user_code_path']
     )
     validation_dataset = GenRecDataset(
         dataset_path=config['dataset_path'] + '/valid.parquet',
         code_path=config['code_path'],
         mode='evaluation',
-        max_len=config['max_len']
+        max_len=config['max_len'],
+        user_code_path=config['user_code_path']
     )
     test_dataset = GenRecDataset(
         dataset_path=config['dataset_path'] + '/test.parquet',
         code_path=config['code_path'],
         mode='evaluation',
-        max_len=config['max_len']
+        max_len=config['max_len'],
+        user_code_path=config['user_code_path']
     )
 
     train_dataloader = GenRecDataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)

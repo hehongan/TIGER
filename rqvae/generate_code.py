@@ -1,11 +1,8 @@
 import collections
-import json
-import logging
+import argparse
 
 import numpy as np
 import torch
-from time import time
-from torch import optim
 from tqdm import tqdm
 
 from torch.utils.data import DataLoader
@@ -41,12 +38,15 @@ def get_collision_item(all_indices_str):
 
     return collision_item_groups
 
-# Attention: Remember to change the dataset name and checkpoint path
-# if you want to generate codes for other datasets.
-dataset = "Beauty"
-ckpt_path = f"./ckpt/{dataset}/Jun-17-2025_15-21-52/best_collision_model.pth"
-output_file = f"../data/{dataset}/{dataset}_t5_rqvae.npy"
-device = torch.device("cuda:0")
+parser = argparse.ArgumentParser(description="Generate semantic IDs from an RQ-VAE checkpoint")
+parser.add_argument("--checkpoint", required=True, help="RQ-VAE checkpoint path")
+parser.add_argument("--output_file", required=True, help="Output .npy path")
+parser.add_argument("--device", default="cuda:0")
+cli_args = parser.parse_args()
+
+ckpt_path = cli_args.checkpoint
+output_file = cli_args.output_file
+device = torch.device(cli_args.device if torch.cuda.is_available() else "cpu")
 
 ckpt = torch.load(ckpt_path, map_location=torch.device('cpu'))
 args = ckpt["args"]
@@ -174,5 +174,6 @@ else:
 # save the codes to a numpy file
 print(f"Saving codes to {output_file}")
 print(f"the first 5 codes: {codes_array[:5]}")
+os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
 np.save(output_file, codes_array)
 

@@ -29,6 +29,7 @@ def process_data(file_path, mode, max_len, PAD_TOKEN=0):
             sequence = row.sequence
             for i in range(1, len(sequence)):
                 processed_data.append({
+                    'user': row.user,
                     'history': sequence[:i],
                     'target': sequence[i]
                 })
@@ -38,6 +39,7 @@ def process_data(file_path, mode, max_len, PAD_TOKEN=0):
         for row in data.itertuples(index=False):
             sequence = row.sequence
             processed_data.append({
+                'user': row.user,
                 'history': sequence[:-1],
                 'target': sequence[-1]
             })
@@ -68,13 +70,17 @@ def pad_or_truncate(sequence, max_len, PAD_TOKEN=0):
         # Left pad sequence with PAD_TOKEN
         return [PAD_TOKEN] * (max_len - len(sequence)) + sequence
     
-def item2code(code_path, codebook_size=256):
+def item2code(code_path, codebook_size=256, token_offset=0):
     """
     Convert itemID to code
     :param code_path: npy file path to store rqvae codes
     :return: dict item_to_code, code_to_item
     """
     data = np.load(code_path, allow_pickle=True)
+    if data.ndim != 2 or data.shape[1] != 4:
+        raise ValueError(f"Semantic IDs in {code_path} must have shape (N, 4)")
+    if data.min() < 0 or data.max() >= codebook_size:
+        raise ValueError(f"Semantic ID values in {code_path} must be in [0, {codebook_size})")
     item_to_code = {}
     code_to_item = {}
     
@@ -82,14 +88,15 @@ def item2code(code_path, codebook_size=256):
     #     item_to_code[index + 1] = code
     #     code_to_item[tuple(code)] = index + 1
     for index, code in enumerate(data):
-        offsets = [c + i * codebook_size + 1 for i,c in enumerate(code)]
+        offsets = [c + i * codebook_size + 1 + token_offset for i,c in enumerate(code)]
         item_to_code[index + 1] = offsets
         code_to_item[tuple(offsets)] = index + 1
 
     return item_to_code, code_to_item
 
 class GenRecDataset(Dataset):
-    def __init__(self, dataset_path, code_path, mode, max_len, PAD_TOKEN=0):
+    def __init__(self, dataset_path, code_path, mode, max_len, PAD_TOKEN=0,
+                 user_code_path=None, user_token_offset=1024):
         """
         Initialize the GenRecDataset.
         Args:
@@ -104,8 +111,14 @@ class GenRecDataset(Dataset):
         self.mode = mode
         self.max_len = max_len
         self.PAD_TOKEN = PAD_TOKEN
+        self.user_code_path = user_code_path
         # Load item-to-code mapping
         self.item_to_code, self.code_to_item = item2code(code_path)
+        self.user_to_code = None
+        if user_code_path:
+            self.user_to_code, _ = item2code(
+                user_code_path, token_offset=user_token_offset
+            )
         # Process the dataset
         self.data = self._prepare_data()
         
@@ -123,6 +136,11 @@ class GenRecDataset(Dataset):
         for item in processed_data:
             item['history'] = [self.item_to_code.get(x, np.array([self.PAD_TOKEN]*4)) for x in item['history']]
             item['target'] = self.item_to_code.get(item['target'], np.array([self.PAD_TOKEN]*4))
+            if self.user_to_code is not None:
+                user_code = self.user_to_code.get(int(item['user']))
+                if user_code is None:
+                    raise KeyError(f"Missing semantic ID for user {item['user']}")
+                item['history'] = [user_code] + item['history']
         return processed_data
     
     def __getitem__(self, index):
