@@ -278,6 +278,10 @@ if __name__ == "__main__":
         train_loss = train(model, train_dataloader, optimizer, device)
         logging.info(f"Training loss: {train_loss}")
 
+        # Start validation from epoch 70.
+        if epoch + 1 < 70:
+            continue
+
         avg_recalls, avg_ndcgs = evaluate(model, validation_dataloader, config['topk_list'], config['beam_size'], device)
         logging.info(f"Validation Dataset: {avg_recalls}")
         logging.info(f"Validation Dataset: {avg_ndcgs}")
