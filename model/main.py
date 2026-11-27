@@ -208,9 +208,9 @@ if __name__ == "__main__":
     parser.add_argument('--log_path', type=str, default='./logs/tiger.log', help='Path to the log file')
     parser.add_argument('--seed', type=int, default=2025, help='Random seed for reproducibility')
     parser.add_argument('--save_path', type=str, default='./ckpt/tiger.pth', help='Path to save the trained model')
-    parser.add_argument('--early_stop', type=int, default=3, help='Early stopping patience')
+    parser.add_argument('--early_stop', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--topk_list', type=list, default=[5,10], help='List of top-k values for evaluation metrics')
-    parser.add_argument('--beam_size', type=int, default=20, help='Beam size for generation')
+    parser.add_argument('--beam_size', type=int, default=30, help='Beam size for generation')
     config = vars(parser.parse_args())
     # Set up logging
     logging.basicConfig(
@@ -277,10 +277,6 @@ if __name__ == "__main__":
         logging.info(f"Epoch {epoch + 1}/{config['num_epochs']}")
         train_loss = train(model, train_dataloader, optimizer, device)
         logging.info(f"Training loss: {train_loss}")
-
-        # Validate every 3 epochs, and always validate the final epoch.
-        if (epoch + 1) % 3 != 0 and (epoch + 1) != config['num_epochs']:
-            continue
 
         avg_recalls, avg_ndcgs = evaluate(model, validation_dataloader, config['topk_list'], config['beam_size'], device)
         logging.info(f"Validation Dataset: {avg_recalls}")
