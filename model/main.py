@@ -98,6 +98,29 @@ class TIGER(nn.Module):
             **kwargs
         )
 
+class SemanticIDTrie:
+    """Restrict decoding to semantic IDs that exist in the item catalog."""
+    def __init__(self, semantic_ids, decoder_start_token_id=0, eos_token_id=0):
+        self.root = {}
+        self.decoder_start_token_id = decoder_start_token_id
+        self.eos_token_id = eos_token_id
+        for semantic_id in semantic_ids:
+            node = self.root
+            for token in semantic_id:
+                node = node.setdefault(int(token), {})
+
+    def prefix_allowed_tokens_fn(self, batch_id, input_ids):
+        prefix = input_ids.tolist()
+        if prefix and prefix[0] == self.decoder_start_token_id:
+            prefix = prefix[1:]
+
+        node = self.root
+        for token in prefix:
+            node = node.get(int(token))
+            if node is None:
+                return [self.eos_token_id]
+        return list(node) if node else [self.eos_token_id]
+
 def calculate_pos_index(preds, labels, maxk=20):
     """Calculate the position index of the ground truth items.
 
@@ -153,7 +176,7 @@ def train(model, train_loader, optimizer, device):
         
     return total_loss / len(train_loader)
 
-def evaluate(model, eval_loader, topk_list, beam_size, device):
+def evaluate(model, eval_loader, topk_list, beam_size, device, item_trie):
     model.eval()
     recalls = {'Recall@' + str(k): 0.0 for k in topk_list}
     ndcgs = {'NDCG@' + str(k): 0.0 for k in topk_list}
@@ -165,7 +188,12 @@ def evaluate(model, eval_loader, topk_list, beam_size, device):
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['target'].to(device)
 
-            preds = model.generate(input_ids=input_ids, attention_mask=attention_mask, num_beams=beam_size)
+            preds = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                num_beams=beam_size,
+                prefix_allowed_tokens_fn=item_trie.prefix_allowed_tokens_fn,
+            )
             preds = preds[:, 1:]  # Exclude the start token
             preds = preds.reshape(input_ids.shape[0], beam_size, -1)  # Reshape to (batch_size, beam_size, seq_len)
             pos_index = calculate_pos_index(preds, labels, maxk=beam_size)
@@ -267,6 +295,11 @@ if __name__ == "__main__":
         max_len=config['max_len'],
         user_code_path=config['user_code_path']
     )
+    item_trie = SemanticIDTrie(
+        train_dataset.item_to_code.values(),
+        decoder_start_token_id=config['pad_token_id'],
+        eos_token_id=config['eos_token_id'],
+    )
 
     train_generator = torch.Generator()
     train_generator.manual_seed(config['seed'])
@@ -304,7 +337,10 @@ if __name__ == "__main__":
         if epoch + 1 < 70:
             continue
 
-        avg_recalls, avg_ndcgs = evaluate(model, validation_dataloader, config['topk_list'], config['beam_size'], device)
+        avg_recalls, avg_ndcgs = evaluate(
+            model, validation_dataloader, config['topk_list'],
+            config['beam_size'], device, item_trie
+        )
         logging.info(f"Validation Dataset: {avg_recalls}")
         logging.info(f"Validation Dataset: {avg_ndcgs}")
         if avg_ndcgs['NDCG@10'] > best_ndcg:
@@ -323,6 +359,9 @@ if __name__ == "__main__":
 
     # Evaluate the selected checkpoint on the test set only once.
     model.load_state_dict(torch.load(config['save_path'], map_location=device))
-    test_avg_recalls, test_avg_ndcgs = evaluate(model, test_dataloader, config['topk_list'], config['beam_size'], device)
+    test_avg_recalls, test_avg_ndcgs = evaluate(
+        model, test_dataloader, config['topk_list'],
+        config['beam_size'], device, item_trie
+    )
     logging.info(f"Test Dataset: {test_avg_recalls}")
     logging.info(f"Test Dataset: {test_avg_ndcgs}")

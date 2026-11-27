@@ -42,7 +42,18 @@ parser = argparse.ArgumentParser(description="Generate semantic IDs from an RQ-V
 parser.add_argument("--checkpoint", required=True, help="RQ-VAE checkpoint path")
 parser.add_argument("--output_file", required=True, help="Output .npy path")
 parser.add_argument("--device", default="cuda:0")
+parser.add_argument(
+    "--collision_strategy", choices=["tiger", "sinkhorn"], default="tiger",
+    help="Use TIGER's extra token or CSG4Rec's Sinkhorn reassignment",
+)
+parser.add_argument(
+    "--max_collision_rounds", type=int, default=None,
+    help="Maximum reassignment rounds (default: Sinkhorn 20, TIGER 30)",
+)
 cli_args = parser.parse_args()
+max_collision_rounds = cli_args.max_collision_rounds
+if max_collision_rounds is None:
+    max_collision_rounds = 20 if cli_args.collision_strategy == "sinkhorn" else 30
 
 ckpt_path = cli_args.checkpoint
 output_file = cli_args.output_file
@@ -51,6 +62,11 @@ device = torch.device(cli_args.device if torch.cuda.is_available() else "cpu")
 ckpt = torch.load(ckpt_path, map_location=torch.device('cpu'))
 args = ckpt["args"]
 state_dict = ckpt["state_dict"]
+if cli_args.collision_strategy == "sinkhorn" and len(args.num_emb_list) != 4:
+    raise ValueError(
+        "Sinkhorn SID requires a four-level RQ-VAE checkpoint. Retrain with "
+        "--num_emb_list 256 256 256 256 --sk_epsilons 0 0 0 0.003"
+    )
 
 
 data = EmbDataset(args.data_path)
@@ -100,16 +116,18 @@ all_indices_str = np.array(all_indices_str)
 
 for vq in model.rq.vq_layers[:-1]:
     vq.sk_epsilon=0.0
+# CSG4Rec applies Sinkhorn only at the final quantization level.
+if cli_args.collision_strategy == "sinkhorn" and model.rq.vq_layers[-1].sk_epsilon == 0.0:
+    model.rq.vq_layers[-1].sk_epsilon = 0.003
 
 tt = 0
 #There are often duplicate items in the dataset, and we no longer differentiate them
 while True:
-    if tt >= 30 or check_collision(all_indices_str):
+    if tt >= max_collision_rounds or check_collision(all_indices_str):
         break
 
     collision_item_groups = get_collision_item(all_indices_str)
-    print(collision_item_groups)
-    print(len(collision_item_groups))
+    print(f"Sinkhorn round {tt + 1}: {len(collision_item_groups)} collision groups")
     for collision_items in collision_item_groups:
         d = data[collision_items].to(device)
 
@@ -147,29 +165,29 @@ for key, value in all_indices_dict.items():
     codes.append(code)
 
 # convert the list of codes to a numpy array
-codes_array = np.array(codes)
+codes_array = np.asarray(codes, dtype=int)
 
-# Add an extra dimension to all codes
-codes_array = np.hstack((codes_array, np.zeros((codes_array.shape[0], 1), dtype=int)))
-
-# Resolve duplicates by incrementing the last dimension
-unique_codes, counts = np.unique(codes_array, axis=0, return_counts=True)
-duplicates = unique_codes[counts > 1]
-
-if len(duplicates) > 0:
-    print("Resolving duplicates in codes...")
-    for duplicate in duplicates:
+if cli_args.collision_strategy == "tiger":
+    # TIGER appends a token that guarantees a unique ID within each collision group.
+    codes_array = np.hstack((codes_array, np.zeros((codes_array.shape[0], 1), dtype=int)))
+    unique_codes, counts = np.unique(codes_array, axis=0, return_counts=True)
+    for duplicate in unique_codes[counts > 1]:
         duplicate_indices = np.where((codes_array == duplicate).all(axis=1))[0]
         for i, idx in enumerate(duplicate_indices):
-            codes_array[idx, -1] = i  # Increment the last digit for resolving duplicates
+            codes_array[idx, -1] = i
+elif codes_array.shape[1] != 4:
+    raise ValueError(
+        "Sinkhorn SID must contain four RQ-VAE codes. Retrain with "
+        "--num_emb_list 256 256 256 256 --sk_epsilons 0 0 0 0.003"
+    )
 
 new_unique_codes, new_counts = np.unique(codes_array, axis=0, return_counts=True)
 duplicates = new_unique_codes[new_counts > 1]
 
 if len(duplicates) > 0:
-    print("There still have duplicates:", duplicates)
+    print(f"Remaining collision groups after Sinkhorn: {len(duplicates)}")
 else:
-    print("There are no duplicates in the codes after resolution.")
+    print("There are no duplicate semantic IDs.")
 
 # save the codes to a numpy file
 print(f"Saving codes to {output_file}")
